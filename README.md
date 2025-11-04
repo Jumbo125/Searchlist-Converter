@@ -47,7 +47,7 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 Falls du (noch) keine `requirements.txt` hast: siehe Abschnitt 5 unten.
-Es liegt auch eine ausführbare *.exe Datei bei, welche direkt genutzt werden kann.
+kann mit Pyinstaller auch gepackt werden
 
 ## Start
 ```bash
