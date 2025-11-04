@@ -1,6 +1,5 @@
-===============================================================================
-CSV → A4 Tabelle (PNG/JPG/PDF/XLSX) — README, Kurzanleitung & Code-Analyse
-===============================================================================
+#CSV → A4 Tabelle (PNG/JPG/PDF/XLSX) — README, Kurzanleitung & Code-Analyse
+
 
 Dieses Dokument enthält:
 1) 🇩🇪 README (Deutsch)
