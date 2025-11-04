@@ -47,6 +47,7 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 Falls du (noch) keine `requirements.txt` hast: siehe Abschnitt 5 unten.
+Es liegt auch eine ausführbare *.exe Datei bei, welche direkt genutzt werden kann.
 
 ## Start
 ```bash
@@ -211,9 +212,9 @@ pyinstaller --noconfirm --onefile --windowed \
 - `resource_path()` im Code unterstützt `--onefile`
 - Systemfonts werden nicht gebündelt; auf Zielsystem vorhanden sein lassen
 
-===============================================================================
-Lizenzhinweise & Python-Bibliotheken
-===============================================================================
+
+### Lizenzhinweise & Python-Bibliotheken
+
 
 Dieses Projekt wird von DIR als **Open Source** veröffentlicht.
 Empfehlung: Verwende die MIT-Lizenz (siehe LICENSE.txt) oder passe sie nach Bedarf an.
@@ -222,7 +223,7 @@ Project is released as **Open Source** by YOU.
 Recommendation: Use the MIT License (see LICENSE.txt) or adapt as needed.
 
 -------------------------------------------------------------------------------
-Projektlizenz / Project License
+### Projektlizenz / Project License
 -------------------------------------------------------------------------------
 
 - Lizenz: MIT (Standard; anpassbar)
