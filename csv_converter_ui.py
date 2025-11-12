@@ -159,6 +159,27 @@ class App(tk.Tk):
 
         ttk.Button(frame, text="Erstellen", command=self.run).grid(row=10, column=2, sticky="e", pady=(pad * 2, 0))
         frame.columnconfigure(1, weight=1)
+        
+        text = """Keine Gewähr für Richtigkeit, Vollständigkeit und Aktualität.
+        Dieses Programm enthält Open-Source-Komponenten:
+        - Python (CPython) – PSF License 2.0
+        - Pillow – Historical Permission Notice and Disclaimer (HPND)
+        - openpyxl – MIT License
+        - Pyphen – LGPL-2.1-or-later
+
+        Die jeweiligen Lizenztexte liegen diesem Programm bei.
+        Es werden keine Rechte an Marken/Daten Dritter übertragen."""
+
+        disclaimer = tk.Label(
+            frame,
+            text = text,
+            fg="#666666",
+            font=("TkDefaultFont", 9),
+            wraplength=780,
+            justify="left"
+        )
+        disclaimer.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
 
     def on_font_toggle(self) -> None:
         self.font_spin.configure(state="normal" if self.use_custom_font.get() else "disabled")
