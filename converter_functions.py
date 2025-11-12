@@ -11,13 +11,24 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 try:
-    import pyphen  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    pyphen = None  # läuft auch ohne, dann keine Silbentrennung
+    import pyphen  # optionale Silbentrennung
+except Exception:  # pragma: no cover
+    pyphen = None
 
+# =========================
+# Konstanten & Presets
+# =========================
 DPI = 300
 A4_MM = (210, 297)
+
+# Header wird in Stücke von max. X Zeichen „hart“ umgebrochen (bessere Planbarkeit)
 HEADER_HARD_WRAP_CHARS = 5
+# Body: lange Suchstrings hart umbrechen (z. B. alle 18 Zeichen)
+BODY_HARD_WRAP_CHARS = 18
+
+# Obergrenzen für Spaltenanteile an der Seitenbreite
+MAX_COL_SHARE_DEFAULT = 0.45     # allgemein
+MAX_COL_SHARE_QUERY = 0.60       # Spalten, die wie Suchqueries aussehen
 
 COLOR_PRESETS = [
     ("Hellgrau", "#F5F5F5"),
@@ -38,12 +49,14 @@ HYPHENATE_HEADERS = False
 
 
 def configure_hyphenation(enable_headers: bool, hyphenator: Optional["pyphen.Pyphen"]) -> None:
+    """Globales Setzen der Silbentrennung (nur Header)."""
     global HYPHENATOR, HYPHENATE_HEADERS
     HYPHENATOR = hyphenator
     HYPHENATE_HEADERS = enable_headers
 
 
 def resource_path(relative_path: str) -> str:
+    """Support für PyInstaller-Bundles."""
     try:
         base_path = sys._MEIPASS  # type: ignore[attr-defined]
     except Exception:
@@ -100,6 +113,7 @@ def load_fonts(size_body: int = 24, size_header: int = 28) -> Tuple[ImageFont.Fr
                 )
             except Exception:
                 continue
+    # Fallback
     return ImageFont.load_default(), ImageFont.load_default()
 
 
@@ -110,6 +124,7 @@ def text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -
 
 def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int,
               hard_chunk: Optional[int] = None) -> List[str]:
+    """Zeilenumbruch: Wortweise, optional mit 'hartem' Chunk-Umbruch für lange 'Wörter'."""
     content = str(text or "")
     if not content:
         return [""]
@@ -214,6 +229,9 @@ def ellipsize(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, m
     return (value[:max(lo - 1, 0)] + ellipsis) if lo > 0 else ellipsis
 
 
+# =========================
+# CSV / TXT Einlesen
+# =========================
 def read_csv(path: str, delimiter: str, encoding_utf8: bool = True) -> List[List[str]]:
     encoding = "utf-8-sig" if encoding_utf8 else "cp1252"
     rows: List[List[str]] = []
@@ -295,8 +313,7 @@ def _parse_cochrane_search_manager_txt(text: str) -> Tuple[List[str], List[List[
 
     def flush_row(final_chunk: Optional[str], hits_str: str) -> None:
         nonlocal rows, buffer, current_id
-        parts = buffer + ([final_chunk] if final_chunk is not None else [])
-        collapsed = re.sub(r"\s+", " ", " ".join(p.replace("\t", " ").strip() for p in parts if p)).strip()
+        collapsed = re.sub(r"\s+", " ", " ".join(p.replace("\t", " ").strip() for p in (buffer + ([final_chunk] if final_chunk is not None else [])) if p)).strip()
         disp_id = f"#{current_id}" if current_id and not str(current_id).startswith("#") else (current_id or "")
         rows.append([disp_id, collapsed, hits_str.strip()])
         buffer.clear()
@@ -336,6 +353,9 @@ def _parse_cochrane_search_manager_txt(text: str) -> Tuple[List[str], List[List[
     return header, rows, meta
 
 
+# =========================
+# Layout-Helfer
+# =========================
 def _guess_lang_from_header(header_list: Sequence[str]) -> str:
     text = " ".join(map(str, header_list or []))
     if any(ch in text for ch in "äöüÄÖÜß"):
@@ -399,14 +419,38 @@ def min_floor_from_font(draw: ImageDraw.ImageDraw, font_body: ImageFont.ImageFon
 
 
 def compute_wrap_score(draw: ImageDraw.ImageDraw, col_texts: Sequence[str], font: ImageFont.ImageFont,
-                       col_width: int, pad_x: int, line_gap: int, is_header: bool = False) -> int:
+                       col_width: int, pad_x: int, line_gap: int, is_header: bool = False,
+                       body_hard_chunk: Optional[int] = BODY_HARD_WRAP_CHARS) -> int:
     inner = max(1, col_width - 2 * pad_x)
     score = 0
     _, one_h = text_size(draw, "Ag", font)
     for text in col_texts:
-        lines = wrap_text(draw, str(text), font, inner, hard_chunk=HEADER_HARD_WRAP_CHARS if is_header else None)
+        lines = wrap_text(
+            draw, str(text), font, inner,
+            hard_chunk=HEADER_HARD_WRAP_CHARS if is_header else body_hard_chunk
+        )
         score += max(0, len(lines) - 1) * one_h
     return score
+
+
+def looks_like_query_column(header_text: str, col_texts: Sequence[str], sample: int = 30) -> bool:
+    """
+    Heuristik: erkennt typische boolesche Such-Operatoren / Feld-Tags (Cochrane, PubMed, CINAHL, …).
+    """
+    pattern = re.compile(r"\b(AND|OR|NOT|NEAR/?\d*|ADJ\d*|N\d+|W\d+|TI:|AB:|MH:|MeSH|\".+?\"|\[tiab\])\b", re.IGNORECASE)
+    score = 0
+
+    if pattern.search(str(header_text or "")):
+        score += 1
+
+    for text in list(col_texts)[:sample]:
+        t = str(text or "")
+        if pattern.search(t):
+            score += 2
+        score += t.count("(") + t.count(")") + t.count('"')
+        if score >= 4:
+            return True
+    return score >= 3
 
 
 def flex_fit_widths(base: Sequence[int], minw: Sequence[int], target_width: int) -> List[int]:
@@ -445,75 +489,142 @@ def flex_fit_widths(base: Sequence[int], minw: Sequence[int], target_width: int)
 
 def equal_width_with_buffer(place_w: int, header: Sequence[str], rows: Sequence[Sequence[str]],
                             fonts: Tuple[ImageFont.ImageFont, ImageFont.ImageFont],
-                            pad_x: int, line_gap: int) -> List[int]:
+                            pad_x: int, line_gap: int, max_col_share: float = MAX_COL_SHARE_DEFAULT) -> List[int]:
+    """
+    Breitenberechnung: Basis wie bisher, ABER die zusätzliche Breite
+    wird – sofern vorhanden – GLEICHMÄSSIG auf die als 'Query' erkannten
+    Spalten verteilt, und diese Spalten werden miteinander gleichbreit
+    gemacht. Alles andere bleibt gleich.
+    """
     font_body, font_header = fonts
     probe = Image.new("RGB", (100, 100), "white")
     drawer = ImageDraw.Draw(probe)
+
+    # Schriftbasierte Werte
     header_piece_longest, _, natural = measure_header_and_words(drawer, header, rows, font_header, font_body, pad_x)
     min_floor = min_floor_from_font(drawer, font_body, pad_x, min_chars=3)
 
     n = len(header)
+    if n == 0:
+        return []
+
+    # schriftbasierter Floor + Start aus Gleichverteilung
     minw = [max(min_floor, header_piece_longest[j]) for j in range(n)]
     equal = max(1, place_w // n)
     widths = [max(minw[j], min(natural[j], equal)) for j in range(n)]
-    total = sum(widths)
 
+    # Falls insgesamt zu wenig Platz: proportional fitten wie gehabt
+    total = sum(widths)
     if total > place_w or sum(minw) > place_w:
-        widths = flex_fit_widths(natural, minw, place_w)
-    else:
-        buffer_width = place_w - total
-        if buffer_width > 0:
-            columns = list(zip(*rows)) if rows else [[] for _ in range(n)]
-            scores = []
-            for j in range(n):
-                header_only = [header[j]] if j < len(header) else []
-                column_texts = columns[j] if j < len(columns) else []
-                score = compute_wrap_score(drawer, header_only, font_header, widths[j], pad_x, line_gap, is_header=True)
-                score += compute_wrap_score(drawer, column_texts, font_body, widths[j], pad_x, line_gap, is_header=False)
-                scores.append(score)
-            order = sorted(range(n), key=lambda j: scores[j], reverse=True)
-            remaining = buffer_width
-            for j in order:
-                can_add = max(0, natural[j] - widths[j])
-                add = min(remaining, can_add)
-                widths[j] += add
-                remaining -= add
-                if remaining <= 0:
-                    break
+        return flex_fit_widths(natural, minw, place_w)
+
+    # Erkennen, welche Spalten Such-Queries sind
+    columns = list(zip(*rows)) if rows else [[] for _ in range(n)]
+    is_query_col = [
+        looks_like_query_column(header[j] if j < len(header) else "", columns[j] if j < len(columns) else [])
+        for j in range(n)
+    ]
+
+    buffer_width = place_w - sum(widths)
+    if buffer_width <= 0:
+        return widths
+
+    # Kappen festlegen (Query-Spalten dürfen mehr)
+    caps = [int(place_w * (MAX_COL_SHARE_QUERY if is_query_col[j] else max_col_share)) for j in range(n)]
+
+    q_idx = [j for j in range(n) if is_query_col[j]]
+    if not q_idx:
+        # Keine Query-Spalten → klassisch (Wrap-Score) verteilen wie gewohnt
+        columns = list(zip(*rows)) if rows else [[] for _ in range(n)]
+        scores = []
+        for j in range(n):
+            header_only = [header[j]] if j < len(header) else []
+            column_texts = columns[j] if j < len(columns) else []
+            score = compute_wrap_score(drawer, header_only, font_header, max(widths[j], 1), pad_x, line_gap, is_header=True)
+            score += compute_wrap_score(drawer, column_texts, font_body, max(widths[j], 1), pad_x, line_gap,
+                                        is_header=False, body_hard_chunk=BODY_HARD_WRAP_CHARS)
+            scores.append(max(score, 1))
+        total_score = sum(scores)
+        for j in range(n):
+            add = int(round(buffer_width * (scores[j] / total_score)))
+            widths[j] = min(caps[j], widths[j] + add)
+        # exakter Ausgleich
         diff = place_w - sum(widths)
-        if diff != 0:
-            columns = list(zip(*rows)) if rows else [[] for _ in range(n)]
-            scores = []
-            for j in range(n):
-                header_only = [header[j]] if j < len(header) else []
-                column_texts = columns[j] if j < len(columns) else []
-                score = compute_wrap_score(drawer, header_only, font_header, max(widths[j], 1), pad_x, line_gap, is_header=True)
-                score += compute_wrap_score(drawer, column_texts, font_body, max(widths[j], 1), pad_x, line_gap, is_header=False)
-                scores.append(score)
-            order = sorted(range(n), key=lambda j: scores[j], reverse=True) or list(range(n))
-            guard = 0
-            while diff != 0 and guard < 10000:
-                changed = False
-                for j in order:
-                    if diff > 0:
-                        widths[j] += 1
-                        diff -= 1
-                        changed = True
-                        if diff == 0:
-                            break
-                    else:
-                        if widths[j] > minw[j]:
-                            widths[j] -= 1
-                            diff += 1
-                            changed = True
-                            if diff == 0:
-                                break
-                if not changed:
+        order = sorted(range(n), key=lambda j: scores[j], reverse=True)
+        guard = 0
+        while diff != 0 and guard < 10000:
+            for j in order:
+                if diff == 0:
                     break
-                guard += 1
-        leftover = place_w - sum(widths)
-        if leftover != 0:
-            widths[-1] = max(minw[-1], widths[-1] + leftover)
+                if diff > 0 and widths[j] < caps[j]:
+                    widths[j] += 1
+                    diff -= 1
+                elif diff < 0 and widths[j] > minw[j]:
+                    widths[j] -= 1
+                    diff += 1
+            guard += 1
+        return widths
+
+    # Ab hier: Query-Spalten gleichbreit machen und Restbreite gleichmäßig dort verteilen
+    # 1) Zielbreite bestimmen
+    current_max_q = max(widths[j] for j in q_idx)
+    max_cap_q = min(caps[j] for j in q_idx)
+
+    # erster Zielwert: bis zum aktuellen Maximum angleichen + gleichmäßige Zusatzbreite
+    tentative_target = min(max_cap_q, current_max_q + buffer_width // len(q_idx))
+
+    # sicherstellen, dass die Summe der Anhebungen <= buffer_width bleibt
+    while tentative_target > current_max_q:
+        need = sum(max(0, tentative_target - widths[j]) for j in q_idx)
+        if need <= buffer_width:
+            break
+        tentative_target -= 1
+
+    # 2) Anheben bis zur Zielbreite (gleichbreit machen)
+    need = sum(max(0, tentative_target - widths[j]) for j in q_idx)
+    for j in q_idx:
+        inc = max(0, tentative_target - widths[j])
+        widths[j] += inc
+    buffer_width -= need
+
+    # 3) Wenn noch Puffer da ist, alle Query-Spalten weiter gleichmäßig erhöhen,
+    #    solange sie unter ihrem Cap liegen
+    while buffer_width > 0:
+        candidates = [j for j in q_idx if widths[j] < caps[j]]
+        if not candidates:
+            break
+        add_each = min(buffer_width // len(candidates), min(caps[j] - widths[j] for j in candidates))
+        if add_each <= 0:
+            # pixelweiser Ausgleich
+            for j in candidates:
+                if buffer_width <= 0:
+                    break
+                if widths[j] < caps[j]:
+                    widths[j] += 1
+                    buffer_width -= 1
+            break
+        for j in candidates:
+            widths[j] += add_each
+        buffer_width -= add_each * len(candidates)
+
+    # 4) Exakter Abschluss-Ausgleich (falls Rundungen)
+    diff = place_w - sum(widths)
+    if diff != 0:
+        # bevorzugt Query-Spalten ausgleichen, sonst alle
+        order = q_idx + [j for j in range(n) if j not in q_idx]
+        guard = 0
+        while diff != 0 and guard < 10000:
+            for j in order:
+                if diff == 0:
+                    break
+                if diff > 0 and widths[j] < caps[j]:
+                    widths[j] += 1
+                    diff -= 1
+                elif diff < 0 and widths[j] > minw[j]:
+                    widths[j] -= 1
+                    diff += 1
+            guard += 1
+
     return widths
 
 
@@ -523,8 +634,10 @@ def row_height_for_widths(draw: ImageDraw.ImageDraw, cells: Sequence[str], col_w
     max_lines = 1
     for idx, text in enumerate(cells):
         col_width = max(1, col_widths[idx] - 2 * pad_x)
-        lines = wrap_text(draw, str(text), font, col_width,
-                          hard_chunk=HEADER_HARD_WRAP_CHARS if is_header else None)
+        lines = wrap_text(
+            draw, str(text), font, col_width,
+            hard_chunk=HEADER_HARD_WRAP_CHARS if is_header else BODY_HARD_WRAP_CHARS
+        )
         max_lines = max(max_lines, len(lines))
     _, one_h = text_size(draw, "Ag", font)
     return one_h * max_lines + 2 * pad_y + (max_lines - 1) * line_gap
@@ -572,26 +685,60 @@ def draw_page(canvas: Image.Image, margin: int, place_w: int, place_h: int,
               fonts: Tuple[ImageFont.ImageFont, ImageFont.ImageFont], pad_x: int, pad_y: int, line_gap: int,
               start: int, end: int, page_idx: int, page_count: int,
               header_rgb: Tuple[int, int, int], zebra_rgb: Tuple[int, int, int],
-              top_note_text: Optional[str] = None, note_h: int = 0) -> None:
+              top_note_text: Optional[str] = None, note_h: int = 0,
+              top_right_text: Optional[str] = None) -> None:
+    """
+    Zeichnet eine Seite. Neu: Seitenangabe (zentriert) & frei eingegebener Text (rechts)
+    stehen OBEN über der Tabelle – nicht mehr unten in der Fußzeile.
+    """
     font_body, font_header = fonts
     drawer = ImageDraw.Draw(canvas)
     grid = (200, 200, 200)
     text_color = (0, 0, 0)
+
+    # Kopfband (oben): enthält optional meta-Note (links), Seitenzahl (zentriert) und rechten Text (rechts)
     y_cursor = margin
-    if top_note_text:
-        inner_w = max(1, place_w - 2 * pad_x)
-        note_text = ellipsize(drawer, top_note_text, font_body, inner_w)
-        drawer.text((margin + pad_x, y_cursor + pad_y), note_text, font=font_body, fill=text_color)
-        drawer.line([(margin, y_cursor + note_h - 1), (margin + place_w - 1, y_cursor + note_h - 1)], fill=grid)
-        y_cursor += note_h
+
+    # Wie hoch wird die Kopfzeile? Eine Textzeile reicht.
+    _, one_h_body = text_size(drawer, "Ag", font_body)
+    band_h = (2 * pad_y + one_h_body)
+
+    # Links: top_note_text (falls vorhanden, ellipsized)
+    inner_w = max(1, place_w - 2 * pad_x)
+    left_text = ellipsize(drawer, top_note_text or "", font_body, inner_w // 3) if (top_note_text and str(top_note_text).strip()) else ""
+    # Mitte: Seite X/Y
+    page_text = f"Seite {page_idx}/{page_count}"
+    # Rechts: freier Text (aus UI)
+    right_text = ellipsize(drawer, top_right_text or "", font_body, inner_w // 3) if (top_right_text and str(top_right_text).strip()) else ""
+
+    # Nur zeichnen, wenn mindestens eines befüllt ist – wir zeichnen hier IMMER, damit die Seite planbar bleibt
+    # (Bei leerem Inhalt sieht man nur die Trennlinie)
+    y_band = y_cursor
+    # Untere Linie des Kopfbands
+    drawer.line([(margin, y_band + band_h - 1), (margin + place_w - 1, y_band + band_h - 1)], fill=grid)
+
+    # Texte platzieren
+    if left_text:
+        drawer.text((margin + pad_x, y_band + pad_y), left_text, font=font_body, fill=text_color)
+    # mittig
+    tw, th = text_size(drawer, page_text, font_body)
+    drawer.text((margin + place_w // 2 - tw // 2, y_band + pad_y), page_text, font=font_body, fill=text_color)
+    # rechts
+    if right_text:
+        rtw, _ = text_size(drawer, right_text, font_body)
+        drawer.text((margin + place_w - pad_x - rtw, y_band + pad_y), right_text, font=font_body, fill=text_color)
+
+    y_cursor += band_h
+
+    # Header-Zeile
     header_h = row_height_for_widths(drawer, header, col_widths, font_header, pad_x, pad_y, line_gap, is_header=True)
     drawer.rectangle([margin, y_cursor, margin + place_w - 1, y_cursor + header_h - 1], fill=header_rgb)
     x_cursor = margin
     for col_idx in range(len(header)):
         col_width = col_widths[col_idx]
         drawer.line([(x_cursor, y_cursor), (x_cursor, y_cursor + place_h)], fill=grid)
-        inner_w = max(1, col_width - 2 * pad_x)
-        lines = wrap_text(drawer, str(header[col_idx]), font_header, inner_w, hard_chunk=HEADER_HARD_WRAP_CHARS)
+        inner_col_w = max(1, col_width - 2 * pad_x)
+        lines = wrap_text(drawer, str(header[col_idx]), font_header, inner_col_w, hard_chunk=HEADER_HARD_WRAP_CHARS)
         _, one_h = text_size(drawer, "Ag", font_header)
         total_h = len(lines) * one_h + (len(lines) - 1) * line_gap
         y_text = y_cursor + (header_h - total_h) // 2
@@ -602,6 +749,8 @@ def draw_page(canvas: Image.Image, margin: int, place_w: int, place_h: int,
     drawer.line([(margin + place_w - 1, y_cursor), (margin + place_w - 1, y_cursor + place_h)], fill=grid)
     drawer.line([(margin, y_cursor + header_h - 1), (margin + place_w - 1, y_cursor + header_h - 1)], fill=grid)
     y = y_cursor + header_h
+
+    # Body-Zeilen
     for idx in range(start, end):
         row = rows[idx]
         row_safe = [row[j] if j < len(row) else "" for j in range(len(header))]
@@ -611,8 +760,8 @@ def draw_page(canvas: Image.Image, margin: int, place_w: int, place_h: int,
         x_cursor = margin
         for col_idx in range(len(header)):
             col_width = col_widths[col_idx]
-            inner_w = max(1, col_width - 2 * pad_x)
-            lines = wrap_text(drawer, str(row_safe[col_idx]), font_body, inner_w, hard_chunk=None)
+            inner_col_w = max(1, col_width - 2 * pad_x)
+            lines = wrap_text(drawer, str(row_safe[col_idx]), font_body, inner_col_w, hard_chunk=BODY_HARD_WRAP_CHARS)
             _, one_h = text_size(drawer, "Ag", font_body)
             y_text = y + pad_y
             for line in lines:
@@ -621,23 +770,26 @@ def draw_page(canvas: Image.Image, margin: int, place_w: int, place_h: int,
             drawer.rectangle([x_cursor, y, x_cursor + col_width - 1, y + row_height - 1], outline=grid)
             x_cursor += col_width
         y += row_height
-    page_text = f"Seite {page_idx}/{page_count}"
-    tw, th = text_size(drawer, page_text, font_body)
-    drawer.text((canvas.width // 2 - tw // 2, canvas.height - mm_to_px(12) - th),
-                page_text, font=font_body, fill=(0, 0, 0))
 
 
 def render_pages_dynamic(header: Sequence[str], rows: Sequence[Sequence[str]], orientation: str,
-                         header_hex: str, zebra_hex: str, top_note: Optional[str] = None) -> List[Image.Image]:
+                         header_hex: str, zebra_hex: str, top_note: Optional[str] = None,
+                         top_right_text: Optional[str] = None, custom_font_pt: Optional[int] = None) -> List[Image.Image]:
     page_w, page_h = a4_pixels(orientation)
     margin = mm_to_px(12)
     place_w, place_h = page_w - 2 * margin, page_h - 2 * margin
-    body_size, header_size, min_header = 24, 28, 16
+
+    # Benutzerdefinierte Schriftgröße (Fließtext); Header wird +4pt angesetzt
+    body_size = int(custom_font_pt) if (custom_font_pt and custom_font_pt > 0) else 24
+    header_size = max(16, body_size + 4)
+    min_header = 16
+
     pad_x, pad_y, line_gap = 16, 12, 6
 
     probe = Image.new("RGB", (100, 100), "white")
     drawer = ImageDraw.Draw(probe)
 
+    # Sicherstellen, dass Header mit Mindestbreiten auf Seite passt
     while True:
         fonts = load_fonts(size_body=body_size, size_header=header_size)
         font_body, font_header = fonts
@@ -663,47 +815,65 @@ def render_pages_dynamic(header: Sequence[str], rows: Sequence[Sequence[str]], o
     fonts = load_fonts(size_body=body_size, size_header=header_size)
     col_widths = equal_width_with_buffer(place_w, header, rows, fonts, pad_x, line_gap)
     font_body, font_header = fonts
-    header_h_tmp = row_height_for_widths(drawer, header, col_widths, font_header, pad_x, pad_y, line_gap, is_header=True)
+
+    # Höhe für Kopfband (oben) berechnen
     _, one_h = text_size(drawer, "Ag", font_body)
-    note_h = (2 * pad_y + one_h) if (top_note and str(top_note).strip()) else 0
-    page_body_height = place_h - header_h_tmp - note_h
+    band_h = (2 * pad_y + one_h)
+
+    # Platz für Body (inkl. Tabellen-Header) – Kopfband abziehen
+    header_h_tmp = row_height_for_widths(drawer, header, col_widths, font_header, pad_x, pad_y, line_gap, is_header=True)
+    page_body_height = place_h - header_h_tmp - band_h
     if page_body_height < 80:
         pad_y = max(8, pad_y - 4)
         header_h_tmp = row_height_for_widths(drawer, header, col_widths, font_header, pad_x, pad_y, line_gap, is_header=True)
-        page_body_height = place_h - header_h_tmp - note_h
+        page_body_height = place_h - header_h_tmp - band_h
+
     pages_layout = paginate_rows_by_height(drawer, header, rows, col_widths, fonts, page_body_height, pad_x, pad_y, line_gap)
+
     header_rgb = hex_to_rgb(header_hex)
     zebra_rgb = hex_to_rgb(zebra_hex)
     pages: List[Image.Image] = []
     page_count = len(pages_layout) if pages_layout else 1
+
     for idx, (start, end, _) in enumerate(pages_layout, start=1):
         canvas = Image.new("RGB", (page_w, page_h), "white")
         draw_page(
             canvas, margin, place_w, place_h, header, rows, col_widths,
             fonts, pad_x, pad_y, line_gap, start, end, idx, page_count,
-            header_rgb, zebra_rgb, top_note_text=(top_note or ""), note_h=note_h,
+            header_rgb, zebra_rgb,
+            top_note_text=(top_note or ""),
+            note_h=band_h,
+            top_right_text=top_right_text,
         )
         pages.append(canvas)
+
     if not rows:
         canvas = Image.new("RGB", (page_w, page_h), "white")
         drawer = ImageDraw.Draw(canvas)
         drawer.text((margin, margin), "Keine Daten", font=font_header, fill=(0, 0, 0))
         pages = [canvas]
+
     return pages
 
 
 def save_as_excel(header: Sequence[str], rows: Sequence[Sequence[str]], path: str,
-                  orientation: str, fit_width: bool = True, meta_note: Optional[str] = None) -> None:
+                  orientation: str, fit_width: bool = True, meta_note: Optional[str] = None,
+                  header_right_text: Optional[str] = None) -> None:
+    """
+    XLSX-Ausgabe. Neu: Seitenzahl & freier Text in der KOPFZEILE (header), nicht in der Fußzeile.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Tabelle"
     first_data_row = 1
+
     if meta_note:
         ws.append([meta_note])
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(header))
         ws["A1"].alignment = Alignment(vertical="center", wrap_text=True)
         ws["A1"].font = Font(bold=False, italic=True)
         first_data_row = 2
+
     ws.append(list(map(str, header)))
     for row in rows:
         ws.append([("" if idx >= len(row) else str(row[idx])) for idx in range(len(header))])
@@ -744,6 +914,11 @@ def save_as_excel(header: Sequence[str], rows: Sequence[Sequence[str]], path: st
         ws.page_margins.right = 0.39
         ws.page_margins.top = 0.59
         ws.page_margins.bottom = 0.59
+
+        # Kopfzeile: Mitte = Seite P/N, Rechts = freier Text
+        ws.header_footer.center_header = "Seite &P/&N"
+        if header_right_text:
+            ws.header_footer.right_header = header_right_text
     except Exception:
         pass
 

@@ -15,13 +15,14 @@ from converter_functions import (
     render_pages_dynamic,
     resource_path,
     save_as_excel,
+    DPI,  # wichtig für Bild-Ausgabe
 )
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("CSV → A4 Tabelle (PNG/JPG/PDF/XLSX)")
-        self.geometry("860x540")
+        self.geometry("860x600")
         self.resizable(False, False)
 
         self._set_icon()
@@ -40,6 +41,13 @@ class App(tk.Tk):
         self.zebra_color_choice = tk.StringVar(value="Wolkenweiß")
         self.hyphen_choice = tk.StringVar(value="Auto (DE/EN)")
         self.remove_empty_cols = tk.BooleanVar(value=False)
+
+        # Kopftext (früher "Fußzeile rechts"): wird jetzt OBEN angezeigt
+        self.header_right_text = tk.StringVar()
+
+        # Schriftgröße
+        self.use_custom_font = tk.BooleanVar(value=False)
+        self.custom_font_pt = tk.IntVar(value=24)
 
         self.build_ui()
 
@@ -136,8 +144,24 @@ class App(tk.Tk):
             variable=self.remove_empty_cols
         ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(pad, 0))
 
-        ttk.Button(frame, text="Erstellen", command=self.run).grid(row=8, column=2, sticky="e", pady=(pad * 2, 0))
+        # === Kopftext & Schriftgröße ===
+        footer_box = ttk.Labelframe(frame, text="Kopftext (oberhalb) & Schrift")
+        footer_box.grid(row=9, column=0, columnspan=3, sticky="we", pady=(pad, 0))
+        ttk.Label(footer_box, text="Text rechts oben:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(footer_box, textvariable=self.header_right_text, width=60).grid(row=0, column=1, sticky="w", padx=(0, 6), pady=6)
+
+        font_row = ttk.Frame(footer_box)
+        font_row.grid(row=0, column=2, sticky="e", padx=6, pady=6)
+        self.font_check = ttk.Checkbutton(font_row, text="Schriftgröße festlegen (pt)", variable=self.use_custom_font, command=self.on_font_toggle)
+        self.font_check.pack(side="left", padx=(0, 6))
+        self.font_spin = ttk.Spinbox(font_row, from_=8, to=72, width=5, textvariable=self.custom_font_pt, state="disabled")
+        self.font_spin.pack(side="left")
+
+        ttk.Button(frame, text="Erstellen", command=self.run).grid(row=10, column=2, sticky="e", pady=(pad * 2, 0))
         frame.columnconfigure(1, weight=1)
+
+    def on_font_toggle(self) -> None:
+        self.font_spin.configure(state="normal" if self.use_custom_font.get() else "disabled")
 
     def on_header_color_change(self, _event=None) -> None:
         name = self.header_color_choice.get()
@@ -227,7 +251,7 @@ class App(tk.Tk):
 
     def run(self) -> None:
         if not self.csv_path.get():
-            messagebox.showerror("Fehler", "Bitte eine CSV-Datei auswählen.")
+            messagebox.showerror("Fehler", "Bitte eine CSV- oder TXT-Datei auswählen.")
             return
         if not self.save_path.get():
             self.choose_save()
@@ -277,11 +301,16 @@ class App(tk.Tk):
             orientation = self.orientation.get()
             out_path = self.save_path.get()
 
+            right_text = self.header_right_text.get().strip() or None
+            custom_pt = int(self.custom_font_pt.get()) if self.use_custom_font.get() else None
+
             if fmt in ("PNG", "JPG", "PDF"):
                 pages = render_pages_dynamic(
                     header, data, orientation,
                     self.header_color_hex.get(), self.zebra_color_hex.get(),
-                    top_note=top_note
+                    top_note=top_note,
+                    top_right_text=right_text,
+                    custom_font_pt=custom_pt
                 )
                 if fmt == "PDF":
                     rgb_pages = [page.convert("RGB") for page in pages]
@@ -306,7 +335,8 @@ class App(tk.Tk):
                                 image.convert("RGB").save(filename, "JPEG", quality=95, dpi=(DPI, DPI))
                         out_path = f"{base}_01{ext if fmt == 'PNG' else '.jpg'}"
             else:
-                save_as_excel(header, data, out_path, orientation, fit_width=True, meta_note=top_note)
+                # XLSX (Kopfzeile statt Fußzeile)
+                save_as_excel(header, data, out_path, orientation, fit_width=True, meta_note=top_note, header_right_text=right_text)
 
             messagebox.showinfo("Fertig", f"Erfolgreich gespeichert:\n{out_path}")
 
