@@ -245,9 +245,3 @@ Beispiel-Inhalt (Kurzform):
 - openpyxl – MIT
 - Pyphen – LGPL-2.1-or-later
 (Volle Lizenztexte bitte beilegen.)
-
--------------------------------------------------------------------------------
-Attribution / Danksagung
--------------------------------------------------------------------------------
-- Icons/Assets (falls genutzt): bitte Quelle & Lizenz ergänzen.
-- Cochrane TXT Parser: eigene Implementierung; keine TXT-Inhalte beigefügt.
