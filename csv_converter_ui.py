@@ -1,4 +1,5 @@
 import os
+import re
 import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog, messagebox
 
@@ -8,21 +9,23 @@ from converter_functions import (
     PRESET_NAMES,
     configure_hyphenation,
     create_temp_csv_without_empty_columns,
+    create_temp_csv_without_selected_columns,
     make_hyphenator,
     normalize_rows,
     read_cochrane_txt,
     read_csv,
     render_pages_dynamic,
     resource_path,
+    save_images_as_pdf,
     save_as_excel,
-    DPI,  # wichtig für Bild-Ausgabe
+    DPI,
 )
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("CSV → A4 Tabelle (PNG/JPG/PDF/XLSX)")
-        self.geometry("860x600")
+        self.geometry("900x710")
         self.resizable(False, False)
 
         self._set_icon()
@@ -31,7 +34,7 @@ class App(tk.Tk):
         self.save_path = tk.StringVar()
         self.sep_choice = tk.StringVar(value=",")
         self.sep_custom = tk.StringVar()
-        self.format_choice = tk.StringVar(value="PNG")
+        self.format_choice = tk.StringVar(value="PDF")
         self.orientation = tk.StringVar(value="landscape")
         self.use_utf8 = tk.BooleanVar(value=True)
 
@@ -40,14 +43,17 @@ class App(tk.Tk):
         self.header_color_choice = tk.StringVar(value="Hellgrau")
         self.zebra_color_choice = tk.StringVar(value="Wolkenweiß")
         self.hyphen_choice = tk.StringVar(value="Auto (DE/EN)")
-        self.remove_empty_cols = tk.BooleanVar(value=False)
+        self.remove_empty_cols = tk.BooleanVar(value=True)  # default AN
 
-        # Kopftext (früher "Fußzeile rechts"): wird jetzt OBEN angezeigt
+        # Kopftext (rechts oben)
         self.header_right_text = tk.StringVar()
 
         # Schriftgröße
         self.use_custom_font = tk.BooleanVar(value=False)
         self.custom_font_pt = tk.IntVar(value=24)
+
+        # Manuelles Spaltenlöschen: "2;5;7"
+        self.remove_cols_str = tk.StringVar(value="")
 
         self.build_ui()
 
@@ -74,11 +80,11 @@ class App(tk.Tk):
         frame.pack(fill="both", expand=True, padx=14, pady=14)
 
         ttk.Label(frame, text="Datei (CSV oder Cochrane TXT):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.csv_path, width=82).grid(row=0, column=1, sticky="we", padx=(pad, 0))
+        ttk.Entry(frame, textvariable=self.csv_path, width=86).grid(row=0, column=1, sticky="we", padx=(pad, 0))
         ttk.Button(frame, text="Durchsuchen…", command=self.choose_csv).grid(row=0, column=2, padx=(pad, 0))
 
         ttk.Label(frame, text="Speichern als:").grid(row=1, column=0, sticky="w", pady=(pad, 0))
-        ttk.Entry(frame, textvariable=self.save_path, width=82).grid(row=1, column=1, sticky="we", padx=(pad, 0), pady=(pad, 0))
+        ttk.Entry(frame, textvariable=self.save_path, width=86).grid(row=1, column=1, sticky="we", padx=(pad, 0), pady=(pad, 0))
         ttk.Button(frame, text="Ziel wählen…", command=self.choose_save).grid(row=1, column=2, padx=(pad, 0), pady=(pad, 0))
 
         row2 = ttk.Frame(frame)
@@ -144,22 +150,27 @@ class App(tk.Tk):
             variable=self.remove_empty_cols
         ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(pad, 0))
 
-        # === Kopftext & Schriftgröße ===
-        footer_box = ttk.Labelframe(frame, text="Kopftext (oberhalb) & Schrift")
-        footer_box.grid(row=9, column=0, columnspan=3, sticky="we", pady=(pad, 0))
-        ttk.Label(footer_box, text="Text rechts oben:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(footer_box, textvariable=self.header_right_text, width=60).grid(row=0, column=1, sticky="w", padx=(0, 6), pady=6)
+        # Manuelles Spaltenlöschen (1-basiert, Semikolon-getrennt)
+        rm_frame = ttk.Frame(frame)
+        rm_frame.grid(row=9, column=0, columnspan=3, sticky="we", pady=(pad, 0))
+        ttk.Label(rm_frame, text="Spalten entfernen (1-basiert; Semikolon getrennt):").pack(side="left")
+        ttk.Entry(rm_frame, textvariable=self.remove_cols_str, width=40).pack(side="left", padx=(6, 0))
 
-        font_row = ttk.Frame(footer_box)
+        # Kopftext & Schriftgröße
+        head_box = ttk.Labelframe(frame, text="Kopfband (oberhalb der Tabelle) & Schrift")
+        head_box.grid(row=10, column=0, columnspan=3, sticky="we", pady=(pad, 0))
+        ttk.Label(head_box, text="Text rechts oben:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(head_box, textvariable=self.header_right_text, width=60).grid(row=0, column=1, sticky="w", padx=(0, 6), pady=6)
+
+        font_row = ttk.Frame(head_box)
         font_row.grid(row=0, column=2, sticky="e", padx=6, pady=6)
         self.font_check = ttk.Checkbutton(font_row, text="Schriftgröße festlegen (pt)", variable=self.use_custom_font, command=self.on_font_toggle)
         self.font_check.pack(side="left", padx=(0, 6))
         self.font_spin = ttk.Spinbox(font_row, from_=8, to=72, width=5, textvariable=self.custom_font_pt, state="disabled")
         self.font_spin.pack(side="left")
 
-        ttk.Button(frame, text="Erstellen", command=self.run).grid(row=10, column=2, sticky="e", pady=(pad * 2, 0))
-        frame.columnconfigure(1, weight=1)
-        
+        # Button
+        ttk.Button(frame, text="Erstellen", command=self.run).grid(row=11, column=2, sticky="e", pady=(pad * 2, 0))
         text = """Keine Gewähr für Richtigkeit, Vollständigkeit und Aktualität.
         Dieses Programm enthält Open-Source-Komponenten:
         - Python (CPython) – PSF License 2.0
@@ -170,16 +181,16 @@ class App(tk.Tk):
         Die jeweiligen Lizenztexte liegen diesem Programm bei.
         Es werden keine Rechte an Marken/Daten Dritter übertragen."""
 
-        disclaimer = tk.Label(
+        style = ttk.Style(self)
+        style.configure("Disclaimer.TLabel", foreground="#666", font=("TkDefaultFont", 9))
+        ttk.Label(
             frame,
-            text = text,
-            fg="#666666",
-            font=("TkDefaultFont", 9),
-            wraplength=780,
+            text=text,
+            wraplength=820,
             justify="left"
-        )
-        disclaimer.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
+        frame.columnconfigure(1, weight=1)
 
     def on_font_toggle(self) -> None:
         self.font_spin.configure(state="normal" if self.use_custom_font.get() else "disabled")
@@ -270,6 +281,23 @@ class App(tk.Tk):
             return custom[0]
         return choice
 
+    def parse_remove_cols_spec(self, spec: str) -> list[int]:
+        if not spec or not spec.strip():
+            return []
+        tokens = re.split(r"[;]+", spec.strip())
+        result: set[int] = set()
+        for t in tokens:
+            t = t.strip()
+            if not t:
+                continue
+            try:
+                n = int(t)
+                if n >= 1:
+                    result.add(n)
+            except Exception:
+                pass
+        return sorted(result)
+
     def run(self) -> None:
         if not self.csv_path.get():
             messagebox.showerror("Fehler", "Bitte eine CSV- oder TXT-Datei auswählen.")
@@ -279,11 +307,11 @@ class App(tk.Tk):
             if not self.save_path.get():
                 return
 
-        temp_path = None
+        temp_paths = []  # temporäre Dateien
         try:
             input_path = self.csv_path.get().strip()
-            header = []
-            data = []
+            header: list[str] = []
+            data: list[list[str]] = []
             meta = {}
 
             if input_path.lower().endswith(".txt"):
@@ -291,17 +319,57 @@ class App(tk.Tk):
             else:
                 separator = self.get_separator()
                 input_for_reading = input_path
+
+                # Preview (Spaltenzahl)
+                try:
+                    rows_preview = normalize_rows(read_csv(input_for_reading, separator, encoding_utf8=self.use_utf8.get()))
+                    if not rows_preview:
+                        messagebox.showerror("Fehler", "Die CSV-Datei enthält keine verwertbaren Daten.")
+                        return
+                    max_cols_preview = max(len(r) for r in rows_preview)
+                except Exception as exc:
+                    messagebox.showerror("Fehler", f"CSV konnte nicht gelesen werden:\n{exc}")
+                    return
+
+                # Manuelles Spaltenlöschen
+                try:
+                    cols_spec = self.remove_cols_str.get().strip()
+                    cols_to_remove = self.parse_remove_cols_spec(cols_spec)
+                    if cols_to_remove:
+                        invalid = [n for n in cols_to_remove if n < 1 or n > max_cols_preview]
+                        if invalid:
+                            messagebox.showerror(
+                                "Fehler",
+                                f"Ungültige Spaltennummer(n): {invalid}\n"
+                                f"Die Datei enthält nur {max_cols_preview} Spalten."
+                            )
+                            return
+                        tmp_path = create_temp_csv_without_selected_columns(
+                            input_for_reading,
+                            separator,
+                            columns_to_remove_1based=cols_to_remove,
+                            encoding_utf8=self.use_utf8.get(),
+                        )
+                        temp_paths.append(tmp_path)
+                        input_for_reading = tmp_path
+                except Exception as exc:
+                    messagebox.showerror("Fehler", f"Spaltenentfernung fehlgeschlagen:\n{exc}")
+                    return
+
+                # Leere Spalten entfernen (optional)
                 if self.remove_empty_cols.get():
                     try:
-                        temp_path = create_temp_csv_without_empty_columns(
-                            input_path,
+                        tmp_path = create_temp_csv_without_empty_columns(
+                            input_for_reading,
                             separator,
                             encoding_utf8=self.use_utf8.get(),
                         )
-                        input_for_reading = temp_path
+                        temp_paths.append(tmp_path)
+                        input_for_reading = tmp_path
                     except Exception as exc:
-                        messagebox.showerror("Fehler", f"Spaltenbereinigung fehlgeschlagen:\n{exc}")
+                        messagebox.showerror("Fehler", f"Spaltenbereinigung (leer) fehlgeschlagen:\n{exc}")
                         return
+
                 rows = normalize_rows(read_csv(input_for_reading, separator, encoding_utf8=self.use_utf8.get()))
                 if not rows:
                     messagebox.showerror("Fehler", "Die CSV-Datei enthält keine verwertbaren Daten.")
@@ -310,10 +378,9 @@ class App(tk.Tk):
                 if not isinstance(header, (list, tuple)):
                     header = [str(header)]
 
-            top_note = None
-            if meta.get("Date Run"):
-                top_note = f"Date Run: {meta['Date Run']}"
+            top_note = f"Date Run: {meta['Date Run']}" if meta.get("Date Run") else None
 
+            # Silbentrennung konfigurieren
             choice = self.hyphen_choice.get()
             hyphenator = make_hyphenator(choice, header)
             configure_hyphenation(enable_headers=bool(hyphenator) and not choice.startswith("Aus"), hyphenator=hyphenator)
@@ -326,6 +393,7 @@ class App(tk.Tk):
             custom_pt = int(self.custom_font_pt.get()) if self.use_custom_font.get() else None
 
             if fmt in ("PNG", "JPG", "PDF"):
+                # 1) Seiten rendern
                 pages = render_pages_dynamic(
                     header, data, orientation,
                     self.header_color_hex.get(), self.zebra_color_hex.get(),
@@ -333,12 +401,10 @@ class App(tk.Tk):
                     top_right_text=right_text,
                     custom_font_pt=custom_pt
                 )
+
+                # 2) Export
                 if fmt == "PDF":
-                    rgb_pages = [page.convert("RGB") for page in pages]
-                    if len(rgb_pages) == 1:
-                        rgb_pages[0].save(out_path, "PDF", resolution=DPI)
-                    else:
-                        rgb_pages[0].save(out_path, "PDF", save_all=True, append_images=rgb_pages[1:], resolution=DPI)  # type: ignore[arg-type]
+                    save_images_as_pdf(pages, out_path)
                 else:
                     base, ext = os.path.splitext(out_path)
                     if len(pages) == 1:
@@ -356,7 +422,7 @@ class App(tk.Tk):
                                 image.convert("RGB").save(filename, "JPEG", quality=95, dpi=(DPI, DPI))
                         out_path = f"{base}_01{ext if fmt == 'PNG' else '.jpg'}"
             else:
-                # XLSX (Kopfzeile statt Fußzeile)
+                # XLSX
                 save_as_excel(header, data, out_path, orientation, fit_width=True, meta_note=top_note, header_right_text=right_text)
 
             messagebox.showinfo("Fertig", f"Erfolgreich gespeichert:\n{out_path}")
@@ -364,9 +430,10 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Fehler", f"Beim Erstellen ist ein Fehler aufgetreten:\n{exc}")
         finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
+            try:
+                for p in temp_paths:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+            except Exception:
+                pass
             configure_hyphenation(False, None)
